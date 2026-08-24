@@ -30,6 +30,29 @@ RUN_TIME_PATTERN = re.compile(r'^[1-9]\d*[smh]$')
 RUN_TIME_UNITS = {'s': 1, 'm': 60, 'h': 3600}
 MAX_PERFORMANCE_USERS = 10
 MAX_PERFORMANCE_RUN_SECONDS = 5 * 60
+PERFORMANCE_SCENARIOS = {
+    'readonly': {
+        'user_class': 'ErpReadOnlyUser',
+        'max_users': 10,
+        'max_run_seconds': 5 * 60,
+        'max_spawn_rate': None,
+        'description': '只读性能基线',
+    },
+    'purchase_write': {
+        'user_class': 'ErpPurchaseWriteUser',
+        'max_users': 3,
+        'max_run_seconds': 2 * 60,
+        'max_spawn_rate': 1,
+        'description': '采购写入最小闭环',
+    },
+    'sales_write': {
+        'user_class': 'ErpSalesWriteUser',
+        'max_users': 3,
+        'max_run_seconds': 2 * 60,
+        'max_spawn_rate': 1,
+        'description': '销售写入最小闭环',
+    },
+}
 
 
 def _build_pytest_args(
@@ -195,17 +218,31 @@ def _run_time(value: str) -> str:
     return value
 
 
+def _validate_performance_limits(scenario: str, users: int, spawn_rate: float, run_time: str) -> None:
+    limits = PERFORMANCE_SCENARIOS[scenario]
+    if users > limits['max_users']:
+        raise ValueError(f'{scenario} 场景并发用户数不能超过 {limits["max_users"]}')
+    if _run_time_seconds(run_time) > limits['max_run_seconds']:
+        max_minutes = limits['max_run_seconds'] // 60
+        raise ValueError(f'{scenario} 场景运行时长不能超过 {max_minutes}m')
+    max_spawn_rate = limits['max_spawn_rate']
+    if max_spawn_rate is not None and spawn_rate > max_spawn_rate:
+        raise ValueError(f'{scenario} 场景用户生成速率不能超过 {max_spawn_rate}/s')
+
+
 def run_performance(users: int, spawn_rate: float, run_time: str, scenario: str) -> None:
     """性能测试显式入口。
 
-    显式执行 Locust headless，只运行 performance/locustfile.py 中的只读场景。
+    显式执行 Locust headless，只运行指定性能场景对应的用户模型。
     """
     report_dir = './reports/locust'
     os.makedirs(report_dir, exist_ok=True)
     timestamp = time.strftime('%Y%m%d-%H%M%S')
+    run_id = time.strftime('%Y%m%d%H%M%S')
     html_report = f'{report_dir}/{scenario}-{timestamp}.html'
     csv_prefix = f'{report_dir}/{scenario}-{timestamp}'
     log_file = f'{report_dir}/{scenario}-{timestamp}.log'
+    user_class = PERFORMANCE_SCENARIOS[scenario]['user_class']
     locust_args = [
         sys.executable,
         '-m',
@@ -228,10 +265,12 @@ def run_performance(users: int, spawn_rate: float, run_time: str, scenario: str)
         '--only-summary',
         '--exit-code-on-error',
         '1',
+        user_class,
     ]
 
-    print('执行 Locust 只读性能调试参数: ' + ' '.join(locust_args))
-    print(f'场景: {scenario}')
+    print('执行 Locust 性能调试参数: ' + ' '.join(locust_args))
+    print(f'场景: {scenario}（{PERFORMANCE_SCENARIOS[scenario]["description"]}）')
+    print(f'本轮 run_id: {run_id}')
     print(f'并发用户数: {users}')
     print(f'用户生成速率: {spawn_rate}/s')
     print(f'运行时长: {run_time}')
@@ -239,9 +278,13 @@ def run_performance(users: int, spawn_rate: float, run_time: str, scenario: str)
     print(f'CSV 输出前缀: {csv_prefix}')
     print(f'日志路径: {log_file}')
 
-    result = subprocess.run(locust_args)
+    env = os.environ.copy()
+    env['ERP_PERF_SCENARIO'] = scenario
+    env['ERP_PERF_RUN_ID'] = run_id
+    env['ERP_PERF_USERS'] = str(users)
+    result = subprocess.run(locust_args, env=env)
     if result.returncode != 0:
-        print('错误: Locust 只读性能调试失败，请先分析失败原因，不继续升压')
+        print('错误: Locust 性能调试失败，请先分析失败原因，不继续升压')
     sys.exit(result.returncode)
 
 
@@ -309,9 +352,9 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--scenario',
-        choices=['readonly'],
+        choices=list(PERFORMANCE_SCENARIOS.keys()),
         default=None,
-        help='性能场景（仅对 performance 有效；当前仅保留只读骨架）',
+        help='性能场景（仅对 performance 有效；写入类场景为受控最小闭环）',
     )
     parser.add_argument(
         '--report',
@@ -351,11 +394,19 @@ if __name__ == '__main__':
         from config.settings import preflight
         sys.exit(0 if preflight() else 1)
     if args.test_type == 'performance':
+        scenario = args.scenario or 'readonly'
+        users = args.users or 1
+        spawn_rate = args.spawn_rate or 1.0
+        run_time = args.run_time or '1m'
+        try:
+            _validate_performance_limits(scenario, users, spawn_rate, run_time)
+        except ValueError as exc:
+            parser.error(str(exc))
         run_performance(
-            args.users or 1,
-            args.spawn_rate or 1.0,
-            args.run_time or '1m',
-            args.scenario or 'readonly',
+            users,
+            spawn_rate,
+            run_time,
+            scenario,
         )
         sys.exit(0)
     if args.test_type == 'notify':
