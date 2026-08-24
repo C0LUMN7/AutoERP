@@ -65,7 +65,7 @@ AutoERP/
 ┌──────────────┐    ┌────────────────┐    ┌────────────────┐
 │ API 自动化    │    │ UI 自动化       │    │ 性能测试        │
 │ pytest       │    │ Playwright     │    │ Locust         │
-│ requests     │    │ Page Object    │    │ readonly tasks │
+│ requests     │    │ Page Object    │    │ read/write     │
 └──────┬───────┘    └───────┬────────┘    └───────┬────────┘
        │                    │                     │
        └────────────┬───────┴────────────┬────────┘
@@ -115,8 +115,10 @@ AutoERP/
 | 用户模型 | 请求范围 | 输出 |
 | --- | --- | --- |
 | `ErpReadOnlyUser` | 登录、商品列表、库存列表、单据列表 | Locust HTML、CSV 和日志 |
+| `ErpPurchaseWriteUser` | 采购入库单创建、详情查询、审核、反审核、清理和残留复核 | Locust HTML、CSV 和日志 |
+| `ErpSalesWriteUser` | 销售出库单创建、详情查询、审核、反审核、库存恢复、清理和残留复核 | Locust HTML、CSV 和日志 |
 
-性能测试当前提供 `readonly` 场景，最大用户数 `10`，最长运行时间 `5m`。
+性能测试当前提供 `readonly`、`purchase_write` 和 `sales_write` 三个显式场景。只读场景最大用户数 `10`、最长运行时间 `5m`；写入场景最大用户数 `3`、最长运行时间 `2m`、最大 `spawn-rate=1`。写入场景只走 API，使用 `AUTO_PERF_` 前缀、运行 ID、审核/反审核和数据库定向清理控制业务副作用，不输出生产容量结论。
 
 ## ✨ 设计亮点
 
@@ -126,7 +128,7 @@ AutoERP/
 | 统一 API 执行器 | 支持单接口用例和多步骤业务场景，失败信息定位到 YAML、用例、请求、断言和变量来源 |
 | Playwright 页面自动化 | 使用官方 `pytest-playwright`，按 Page Object 组织登录、采购转入库、销售转出库等 ERP 页面冒烟用例 |
 | 跨层闭环校验 | E2E 用例串联 UI 操作、API 查询和数据库校验，覆盖采购入库与销售出库链路 |
-| 性能测试 | Locust 当前执行登录、商品列表、库存列表和单据列表等只读请求，不混入写入类压测 |
+| 性能测试 | Locust 覆盖只读查询基线、采购写入和销售写入两个受控事务场景，写入数据使用 `AUTO_PERF_` 前缀和运行 ID 定向清理 |
 | 运行入口收敛 | 根目录 `run.py` 统一承接 API、UI、E2E、环境预检、性能和通知命令 |
 | 报告产物隔离 | API/UI/E2E 使用分目录 Allure 原始结果，UI/E2E 输出截图、视频和 Trace，性能输出 HTML、CSV 和日志 |
 
@@ -202,6 +204,8 @@ AutoERP/
 - 预检失败不得继续升压。
 - 不执行写入类性能场景，不使用 `MYSQL_*` 做数据库闭环。
 - 使用并发锁 `jsh-erp-performance`，同一时间只允许一个性能任务运行。
+
+采购和销售写入性能场景当前只在本地或受控真实测试环境中显式执行，不纳入 GitHub 托管 Runner 的手动性能流水线。
 
 ### GitHub Secrets
 
@@ -283,6 +287,8 @@ python run.py e2e --suite all
 
 # 性能测试
 python run.py performance --scenario readonly --users 1 --spawn-rate 1 --run-time 1m
+python run.py performance --scenario purchase_write --users 1 --spawn-rate 1 --run-time 1m
+python run.py performance --scenario sales_write --users 1 --spawn-rate 1 --run-time 1m
 
 # 显式发送通知
 python run.py notify --report reports/api_results.xml --channel email
@@ -290,7 +296,7 @@ python run.py notify --report reports/api_results.xml --channel dingtalk
 python run.py notify --report reports/api_results.xml --channel all
 ```
 
-`performance` 必须显式执行，不会混入 API/UI/E2E 普通回归。当前性能入口提供 `readonly` 场景，最大用户数 `10`，最长运行时间 `5m`。
+`performance` 必须显式执行，不会混入 API/UI/E2E 普通回归。当前性能入口提供 `readonly`、`purchase_write` 和 `sales_write` 场景；`readonly` 最大用户数 `10`、最长运行时间 `5m`，写入场景最大用户数 `3`、最长运行时间 `2m`、最大 `spawn-rate=1`。写入类结果仅作为受控测试环境下的性能验证，不作为生产容量结论。
 
 `notify` 也必须显式执行，API/UI/E2E 默认执行完成后不会自动发送通知。通知依赖本地 `config/local.ini` 或环境变量中的钉钉、邮箱配置。
 
