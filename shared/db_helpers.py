@@ -93,44 +93,37 @@ def get_depot_item(header_id, product_name: str, depot_id=None) -> dict:
     return row
 
 
-def list_depot_heads(prefix: str, run_id: str):
+def list_depot_heads(document_ids):
+    ids = sorted({int(document_id) for document_id in document_ids})
+    if not ids:
+        return []
+    placeholders = ", ".join(["%s"] * len(ids))
     return fetch_all(
-        """
+        f"""
         SELECT id, number, type, sub_type, status
         FROM jsh_depot_head
-        WHERE number LIKE %s AND number LIKE %s AND delete_flag = '0'
+        WHERE id IN ({placeholders}) AND delete_flag = '0'
         ORDER BY id
         """,
-        (f"{prefix}%", f"%{run_id}%"),
+        tuple(ids),
     )
 
 
-def cleanup_depot_documents(prefix: str, run_id: str) -> dict:
-    """删除本轮自动化单据与明细；调用前应先把已审核出入库单反审核。"""
-    if not prefix or not run_id:
-        raise RuntimeError("清理条件缺少 prefix 或 run_id")
-
-    head_ids = (
-        "SELECT id FROM jsh_depot_head "
-        "WHERE number LIKE %s AND number LIKE %s AND delete_flag = '0'"
-    )
-    account_ids = (
-        "SELECT id FROM jsh_account_head "
-        "WHERE bill_no LIKE %s AND bill_no LIKE %s AND delete_flag = '0'"
-    )
-    params = (f"{prefix}%", f"%{run_id}%")
+def cleanup_depot_documents(document_ids) -> dict:
+    """在一个事务中按本轮登记 ID 删除单据与明细。"""
+    ids = sorted({int(document_id) for document_id in document_ids})
+    if not ids:
+        return {}
+    placeholders = ", ".join(["%s"] * len(ids))
+    params = tuple(ids)
     statements = [
-        ("收付款明细-按业务单据", f"DELETE FROM jsh_account_item WHERE bill_id IN ({head_ids})", params),
-        ("收付款明细-按收付款单", f"DELETE FROM jsh_account_item WHERE header_id IN ({account_ids})", params),
-        ("出入库明细", f"DELETE FROM jsh_depot_item WHERE header_id IN ({head_ids})", params),
-        (
-            "收付款单",
-            "DELETE FROM jsh_account_head WHERE bill_no LIKE %s AND bill_no LIKE %s AND delete_flag = '0'",
-            params,
-        ),
+        ("收付款明细-按业务单据",
+         f"DELETE FROM jsh_account_item WHERE bill_id IN ({placeholders})", params),
+        ("出入库明细",
+         f"DELETE FROM jsh_depot_item WHERE header_id IN ({placeholders})", params),
         (
             "出入库单",
-            "DELETE FROM jsh_depot_head WHERE number LIKE %s AND number LIKE %s AND delete_flag = '0'",
+            f"DELETE FROM jsh_depot_head WHERE id IN ({placeholders})",
             params,
         ),
     ]
@@ -153,24 +146,38 @@ def cleanup_depot_documents(prefix: str, run_id: str) -> dict:
         conn.close()
 
 
-def count_run_residue(prefix: str, run_id: str) -> dict:
+def count_run_residue(document_ids) -> dict:
+    ids = sorted({int(document_id) for document_id in document_ids})
+    if not ids:
+        return {"jsh_depot_head": 0, "jsh_depot_item": 0, "jsh_account_item": 0}
+    placeholders = ", ".join(["%s"] * len(ids))
+    params = tuple(ids)
     head_count = fetch_one(
-        """
+        f"""
         SELECT COUNT(*) AS c
         FROM jsh_depot_head
-        WHERE number LIKE %s AND number LIKE %s AND delete_flag = '0'
+        WHERE id IN ({placeholders})
         """,
-        (f"{prefix}%", f"%{run_id}%"),
+        params,
     )["c"]
-    account_count = fetch_one(
-        """
+    item_count = fetch_one(
+        f"""
         SELECT COUNT(*) AS c
-        FROM jsh_account_head
-        WHERE bill_no LIKE %s AND bill_no LIKE %s AND delete_flag = '0'
+        FROM jsh_depot_item
+        WHERE header_id IN ({placeholders})
         """,
-        (f"{prefix}%", f"%{run_id}%"),
+        params,
+    )["c"]
+    account_item_count = fetch_one(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM jsh_account_item
+        WHERE bill_id IN ({placeholders})
+        """,
+        params,
     )["c"]
     return {
         "jsh_depot_head": head_count,
-        "jsh_account_head": account_count,
+        "jsh_depot_item": item_count,
+        "jsh_account_item": account_item_count,
     }

@@ -47,27 +47,64 @@ class LoginPage(BasePage):
 
     def open(self) -> None:
         """打开真实 jshERP 登录页"""
-        self.page.goto(ERP_UI_URL.rstrip("/") + self.LOGIN_PATH)
-        self.page.wait_for_load_state("domcontentloaded")
+        self.page.goto(
+            ERP_UI_URL.rstrip("/") + self.LOGIN_PATH,
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
         self.page.locator(self.USERNAME_SELECTOR).wait_for(timeout=15000)
 
     def login(self, username: str, password: str) -> None:
-        """填写账号、密码和页面验证码后登录；验证码 OCR 失败时最多重试 3 次"""
+        """填写账号、密码和页面验证码后登录；最多重试3次"""
         last_error = None
+
         for attempt in range(1, self.MAX_LOGIN_ATTEMPTS + 1):
             if attempt > 1:
                 self.open()
+
             try:
                 self.page.locator(self.USERNAME_SELECTOR).fill(username)
                 self.page.locator(self.PASSWORD_SELECTOR).fill(password)
-                self.page.locator(self.CAPTCHA_INPUT_SELECTOR).fill(self._read_page_captcha())
-                self.page.get_by_role("button", name=self.LOGIN_BUTTON_TEXT).click()
-                self._wait_logged_in(timeout=5000)
+                self.page.locator(self.CAPTCHA_INPUT_SELECTOR).fill(
+                    self._read_page_captcha()
+                )
+
+                with self.page.expect_response(
+                    lambda r: r.request.method == "POST" and "/user/login" in r.url,
+                    timeout=10000,
+                ) as response_info:
+                    self.page.get_by_role(
+                        "button", name=self.LOGIN_BUTTON_TEXT
+                    ).click()
+
+                response = response_info.value
+                result = response.json()
+                data = result.get("data")
+                data = data if isinstance(data, dict) else {}
+
+                print(
+                    f"[UI登录接口] HTTP={response.status}, "
+                    f"code={result.get('code')}, "
+                    f"message={data.get('message') or result.get('msg') or result.get('msgTip')}",
+                    flush=True,
+                )
+
+                self._wait_logged_in(timeout=15000)
                 self._close_optional_home_overlays()
                 return
+
             except (RuntimeError, PlaywrightTimeoutError) as error:
+                print(
+                    f"[UI登录] 第{attempt}次失败，"
+                    f"当前URL={self.page.url}，"
+                    f"错误={type(error).__name__}: {error}",
+                    flush=True,
+                )
                 last_error = error
-        raise RuntimeError(f"登录失败：验证码 OCR 或页面登录连续 {self.MAX_LOGIN_ATTEMPTS} 次未成功") from last_error
+
+        raise RuntimeError(
+            f"登录失败：连续{self.MAX_LOGIN_ATTEMPTS}次未成功"
+        ) from last_error
 
     def assert_logged_in(self, timeout: int = 15000) -> None:
         """按配置校验登录成功。
@@ -83,7 +120,7 @@ class LoginPage(BasePage):
         kind = kind or UI_LOGIN_SUCCESS_KIND or self.DEFAULT_SUCCESS_KIND
         value = value or UI_LOGIN_SUCCESS_VALUE or self.DEFAULT_SUCCESS_VALUE
         if kind == "url":
-            self.wait_for_url(value, timeout=timeout)
+            self.page.wait_for_url(value, wait_until="domcontentloaded", timeout=timeout)
         elif kind == "title":
             self.wait_for_title(value, timeout=timeout)
         elif kind == "text":

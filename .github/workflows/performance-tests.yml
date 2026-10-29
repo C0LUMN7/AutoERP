@@ -118,25 +118,51 @@ jobs:
       - name: Run read-only performance test
         run: python run.py performance --scenario "$PERF_SCENARIO" --users "$PERF_USERS" --spawn-rate "$PERF_SPAWN_RATE" --run-time "$PERF_RUN_TIME"
 
-      - name: Upload performance artifacts
+      - name: Build performance summary
+        if: always()
+        env:
+          EXECUTION_STATUS: ${{ job.status }}
+          SUMMARY_FILE: artifact-summary/performance.json
+        run: |
+          python - <<'PY'
+          import csv
+          import json
+          import os
+          from pathlib import Path
+
+          summary = {
+              "suite": "readonly-performance",
+              "execution_status": os.environ["EXECUTION_STATUS"],
+              "scenario": os.environ["PERF_SCENARIO"],
+              "users": os.environ["PERF_USERS"],
+              "spawn_rate": os.environ["PERF_SPAWN_RATE"],
+              "run_time": os.environ["PERF_RUN_TIME"],
+              "aggregate_summary_available": False,
+              "request_count": None,
+              "failure_count": None,
+          }
+          reports = list(Path("reports/locust").glob("*_stats.csv"))
+          if reports:
+              latest = max(reports, key=lambda path: path.stat().st_mtime)
+              with latest.open(newline="", encoding="utf-8-sig") as stream:
+                  for row in csv.DictReader(stream):
+                      if row.get("Name") == "Aggregated":
+                          summary.update(
+                              aggregate_summary_available=True,
+                              request_count=int(row["Request Count"]),
+                              failure_count=int(row["Failure Count"]),
+                          )
+                          break
+          output = Path(os.environ["SUMMARY_FILE"])
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload performance summary
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: readonly-performance-artifacts-${{ github.run_id }}
-          path: |
-            reports/locust/*.html
-            reports/locust/*.csv
-            reports/locust/*.log
-            !.runtime/**
-            !**/.env
-            !**/*storage_state*
-            !**/*token*
-            !**/*Token*
-            !**/*password*
-            !**/*Password*
-            !**/*cookie*
-            !**/*Cookie*
-            !**/*session*
-            !**/*Session*
+          name: readonly-performance-summary-${{ github.run_id }}
+          path: artifact-summary/performance.json
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error

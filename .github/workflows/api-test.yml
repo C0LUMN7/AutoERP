@@ -161,15 +161,49 @@ jobs:
       - name: Run tests
         run: python run.py api --suite ${{ github.event.inputs.suite }}
 
-      - name: Upload test artifacts
+      - name: Build test summary
+        if: always()
+        env:
+          TEST_SUITE: ${{ github.event.inputs.suite }}
+          EXECUTION_STATUS: ${{ job.status }}
+          JUNIT_XML: reports/api_results.xml
+          SUMMARY_FILE: artifact-summary/api-test.json
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path(os.environ["JUNIT_XML"])
+          summary = {
+              "suite": os.environ["TEST_SUITE"],
+              "execution_status": os.environ["EXECUTION_STATUS"],
+              "junit_summary_available": report.is_file(),
+              "total": None,
+              "passed": None,
+              "failed": None,
+              "skipped": None,
+          }
+          if report.is_file():
+              root = ET.parse(report).getroot()
+              suites = [root] if root.tag.rsplit("}", 1)[-1] == "testsuite" else [
+                  child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"
+              ]
+              total = sum(int(suite.get("tests", 0)) for suite in suites)
+              failed = sum(int(suite.get("failures", 0)) + int(suite.get("errors", 0)) for suite in suites)
+              skipped = sum(int(suite.get("skipped", 0)) for suite in suites)
+              summary.update(total=total, passed=max(total - failed - skipped, 0), failed=failed, skipped=skipped)
+          output = Path(os.environ["SUMMARY_FILE"])
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload test summary
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: erp-api-test-${{ github.event.inputs.suite }}-${{ github.run_id }}
-          path: |
-            reports/api_results.xml
-            reports/allure-results/api/
-            reports/allure-report/
-            reports/logs/
+          name: erp-api-test-summary-${{ github.event.inputs.suite }}-${{ github.run_id }}
+          path: artifact-summary/api-test.json
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error

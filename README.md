@@ -7,10 +7,38 @@
 [![Locust](https://img.shields.io/badge/Locust-2.31+-red.svg)](https://locust.io)
 [![CI GitHub Actions](https://img.shields.io/badge/CI-GitHub_Actions-blue.svg)](https://github.com/features/actions)
 
-本项目是基于进销存系统 **jshERP** 的全方位自动化测试框架，覆盖接口自动化、UI 自动化、E2E 和性能测试。适用于测试工程师对自动化测试框架进行实践、求职面试展示或学习参考。
+AutoERP 是基于 Python + pytest、面向 jshERP 进销存业务的自动化测试框架，统一执行 API、UI 与跨层 E2E 测试，覆盖商品、仓库、采购和销售等核心业务。项目通过数据驱动、数据库断言和失败现场留存，减少重复回归成本并提升问题定位效率。
+
+## 📊 实际测试成果
+
+2026-10-29 在同一轮 pytest 完整执行中共运行 **44 条自动化用例，43 Passed / 1 Failed，通过率 97.72%**；完整执行耗时 **381.52 秒（约 6 分 22 秒）**。
+
+| 测试类型 | 用例数 | Passed | Failed |
+| --- | ---: | ---: | ---: |
+| API 自动化 | 39 | 38 | 1 |
+| UI 自动化 | 3 | 3 | 0 |
+| E2E 自动化 | 2 | 2 | 0 |
+| **合计** | **44** | **43** | **1** |
+
+- UI 登录、采购转入库、销售转出库 3 条用例全部通过。
+- 采购入库、销售出库 2 条跨层 E2E 均通过，完成 UI 操作、API 查询、MySQL 断言和定向清理。
+- 本轮没有额外的 teardown ERROR。
+- 唯一失败用例为“销售出库数量超出库存，预期接口拒绝请求”：实际接口返回 `code=200` 且创建了出库单，与测试预期不一致；本轮结束后该单据已由后置清理移除。
+- 数据库只读复核未发现本轮测试业务数据的有效残留；仓库 `124` 中商品 `929` 的库存恢复至基准值 `197.000000`。
+
+### Allure 全量执行总览
+
+![Allure 全量自动化测试报告](images/allure_overview.png)
+
+### Allure 测试套件与跨层 E2E
+
+![API、UI、E2E 测试套件与销售跨层业务闭环](images/allure_details.png)
+
+> 以上结果来自本地真实测试环境的完整执行，报告保留了失败结果，不将数据清理成功等同于全部测试通过。
 
 ## 目录
 
+- [实际测试成果](#-实际测试成果)
 - [技术栈](#-技术栈)
 - [项目结构](#-项目结构)
 - [技术架构](#-技术架构)
@@ -18,7 +46,7 @@
 - [设计亮点](#-设计亮点)
 - [配置说明](#-配置说明)
 - [测试报告](#-测试报告)
-- [CI/CD 流水线](#-cicd-流水线)
+- [CI 持续集成](#-ci-持续集成)
 - [快速开始](#-快速开始)
 - [License](#-license)
 
@@ -32,7 +60,7 @@
 | MySQL / PyMySQL | 数据库断言和测试数据复核 |
 | Allure | API、UI、E2E 可视化报告 |
 | Locust | 性能测试与 HTML/CSV 输出 |
-| GitHub Actions | 质量检查与手动性能流水线 |
+| GitHub Actions | 代码检查、用例收集与只读连通性检查 |
 
 ## 📁 项目结构
 
@@ -45,6 +73,7 @@ AutoERP/
 ├── performance/              # Locust 性能测试
 ├── shared/                   # API/UI/E2E 复用的客户端和数据库辅助方法
 ├── config/                   # 统一配置读取与配置模板
+├── images/                   # README 使用的 Allure 与 Locust 真实运行截图
 ├── reports/                  # 测试报告与运行产物
 ├── run.py                    # 统一执行入口
 ├── pytest.ini                # pytest 配置与 marker
@@ -88,6 +117,8 @@ AutoERP/
 
 ### API 自动化
 
+接口用例使用 YAML 描述请求、提取和断言规则，由统一执行器完成鉴权、变量替换、requests 调用、JSONPath 提取、响应断言、JSON Schema 契约校验及 MySQL 数据库断言。
+
 | 类型 | 覆盖内容 | 入口 |
 | --- | --- | --- |
 | 单接口用例 | 商品、仓库、采购、销售、收付款等接口 YAML | `python run.py api --suite single` |
@@ -97,6 +128,8 @@ AutoERP/
 
 ### UI 自动化
 
+UI 用例基于 pytest-playwright 和 Page Object，复用登录态，并在失败时保留 Screenshot 与 Trace，便于还原页面状态和请求时序。
+
 | 测试文件 | 覆盖范围 | 说明 |
 | --- | --- | --- |
 | `ui/cases/test_login.py` | jshERP 登录冒烟 | 账号、密码和登录成功判断均来自配置 |
@@ -104,6 +137,8 @@ AutoERP/
 | `ui/cases/test_skeleton.py` | UI 收集检查 | 不启动浏览器，用于验证 pytest 收集链路 |
 
 ### 跨层 E2E
+
+E2E 围绕真实 ERP 业务闭环构建，不只验证浏览器页面：测试从 UI 创建和流转单据，再通过 API 查询、MySQL 库存与金额断言确认后端结果，最后按真实数据库 ID 精确定向清理。
 
 | 测试文件 | 覆盖范围 | 校验方式 |
 | --- | --- | --- |
@@ -118,19 +153,39 @@ AutoERP/
 | `ErpPurchaseWriteUser` | 采购入库单创建、详情查询、审核、反审核、清理和残留复核 | Locust HTML、CSV 和日志 |
 | `ErpSalesWriteUser` | 销售出库单创建、详情查询、审核、反审核、库存恢复、清理和残留复核 | Locust HTML、CSV 和日志 |
 
-性能测试当前提供 `readonly`、`purchase_write` 和 `sales_write` 三个显式场景。只读场景最大用户数 `10`、最长运行时间 `5m`；写入场景最大用户数 `3`、最长运行时间 `2m`、最大 `spawn-rate=1`。写入场景只走 API，使用 `AUTO_PERF_` 前缀、运行 ID、审核/反审核和数据库定向清理控制业务副作用，不输出生产容量结论。
+性能测试当前提供 `readonly`、`purchase_write` 和 `sales_write` 三个显式场景。写入场景只在受控测试环境中用于短时冒烟验证，使用 `AUTO_PERF_` 前缀、运行 ID、审核/反审核和数据库定向清理控制业务副作用。
+
+2026-08-29 对 ERP 核心业务只读接口执行了约 5 分钟的持续基线测试，场景包含登录鉴权请求：
+
+| 指标 | 结果 |
+| --- | ---: |
+| 最大并发用户数 | 10 |
+| 持续时间 | 约 5 分钟 |
+| 总请求数 | 1,441 |
+| 失败请求数 | 0 |
+| RPS | 4.66 |
+| 平均响应时间 | 32.75 ms |
+| P95 | 43 ms |
+| 错误率 | 0% |
+
+![Locust 性能测试统计结果](images/locust_sta.png)
+
+![Locust RPS、响应时间及并发用户趋势](images/locust_charts.png)
+
+该结果仅作为特定测试环境和 10 用户负载下的性能基线，可用于后续版本回归对比，不代表系统最大承载能力、极限并发或容量上限。采购、销售写入场景属于短时写入冒烟测试，与上述持续只读性能基线分别记录。
 
 ## ✨ 设计亮点
 
 | 特性 | 说明 |
 | --- | --- |
-| 真实接口基线 | API 用例复用 jshERP 真实 YAML，覆盖商品、仓库、采购、销售、异常边界和采购/销售业务链路 |
-| 统一 API 执行器 | 支持单接口用例和多步骤业务场景，失败信息定位到 YAML、用例、请求、断言和变量来源 |
-| Playwright 页面自动化 | 使用官方 `pytest-playwright`，按 Page Object 组织登录、采购转入库、销售转出库等 ERP 页面冒烟用例 |
-| 跨层闭环校验 | E2E 用例串联 UI 操作、API 查询和数据库校验，覆盖采购入库与销售出库链路 |
-| 性能测试 | Locust 覆盖只读查询基线、采购写入和销售写入两个受控事务场景，写入数据使用 `AUTO_PERF_` 前缀和运行 ID 定向清理 |
-| 运行入口收敛 | 根目录 `run.py` 统一承接 API、UI、E2E、环境预检、性能和通知命令 |
-| 报告产物隔离 | API/UI/E2E 使用分目录 Allure 原始结果，UI/E2E 输出截图、视频和 Trace，性能输出 HTML、CSV 和日志 |
+| 数据驱动与统一执行 | pytest 管理 API、UI、E2E，用 YAML 描述接口请求、提取和断言规则，`run.py` 提供统一入口 |
+| API 会话上下文 | 登录鉴权、Token 失效重试、模板变量替换及 JSONPath/正则提取使用会话运行上下文，避免不同运行共享提取数据 |
+| 响应与数据库断言 | 统一执行器支持 HTTP/业务字段断言、JSON Schema 契约校验和 MySQL 数据断言，失败信息定位到 YAML、步骤、变量来源和具体断言 |
+| UI 稳定性与数据登记 | Page Object 使用显式响应等待；销售订单处理异步自动编号时序，保存后按实际请求单号查询并优先登记真实数据库 ID |
+| 跨层闭环与安全清理 | E2E 串联 UI、API、MySQL；对已审核库存单据先反审核，再按精确 ID 清理并复核主单、明细和收付款关联残留 |
+| 数据隔离与异常保护 | API、UI、E2E 使用独立前缀和运行 ID；无法唯一定位真实单据时停止扩大清理范围并输出人工核查风险 |
+| 失败现场留存 | 本地使用 Allure、日志、断言附件及 Playwright Screenshot / Trace 辅助复现和定位问题，敏感请求字段在日志与附件中脱敏 |
+| 受控性能场景 | Locust 提供只读持续基线，以及采购、销售短时写入冒烟；写入数据按 `AUTO_PERF_` 前缀和运行 ID 定向处理 |
 
 ## ⚙ 配置说明
 
@@ -162,48 +217,50 @@ AutoERP/
 
 ## 📈 测试报告
 
+本地执行会生成 Allure、JUnit 和 Playwright 调试产物。失败用例可结合断言上下文、脱敏后的请求/响应附件、Screenshot 与 Trace 还原现场；并非每个通过步骤都会生成截图或完整 Trace。开头的真实报告截图见[实际测试成果](#-实际测试成果)。
+
 | 产物 | 路径 |
 | --- | --- |
 | API Allure 原始结果 | `reports/allure-results/api/` |
 | UI Allure 原始结果 | `reports/allure-results/ui/` |
 | E2E Allure 原始结果 | `reports/allure-results/e2e/` |
+| 本轮全量 Allure 原始结果 | `reports/allure-results/readme-final-20261029-162021/` |
+| 本轮全量 JUnit XML | `reports/readme-final-20261029-162021.xml` |
 | Allure HTML 报告 | `reports/allure-report/<类型>-<时间戳>-<进程号>/` |
-| Playwright 截图、视频、Trace | `reports/playwright/` |
+| Playwright Screenshot / Trace | `reports/playwright/` |
 | Locust HTML、CSV、日志 | `reports/locust/` |
 | JUnit XML | `reports/api_results.xml`、`reports/ui_results.xml`、`reports/e2e_results.xml` |
 
+查看本轮全量 Allure 结果：
+
+```bash
+allure serve reports/allure-results/readme-final-20261029-162021
+```
+
 `.runtime/auth/` 只用于 Playwright 登录态，不属于报告目录，不应上传为 artifact。
 
-## 🔄 CI/CD 流水线
+## 🔄 CI 持续集成
 
 当前仓库包含三个 workflow 文件：
 
 | 文件 | 用途 |
 | --- | --- |
-| `.github/workflows/api-test.yml` | API 自动化 workflow，保留兼容 |
-| `.github/workflows/quality-gate.yml` | API/UI/E2E 质量检查 |
-| `.github/workflows/performance-tests.yml` | 手动只读性能流水线 |
+| `.github/workflows/quality-gate.yml` | Push / PR / 手动触发的轻量检查与用例收集 |
+| `.github/workflows/api-test.yml` | Push 代码检查和收集；手动选择 API 套件执行 |
+| `.github/workflows/performance-tests.yml` | 手动只读性能预检与受控基线执行 |
 
-### 质量检查策略
+### 自动检查与手动任务
 
-- PR 到 `master` 默认运行 `lint-and-collect`、`api-smoke`、`ui-smoke`。
-- PR 的 `api-smoke` 只做 API smoke 收集和 API 连通性检查，不执行数据库断言或数据库闭环。
-- PR 的 `ui-smoke` 只做 UI smoke 收集和 UI 连通性检查，不安装浏览器、不执行真实页面用例。
-- `master` push 或 `workflow_dispatch` 可运行 `e2e-smoke`。
-- 建议 Required Checks 设置为 `lint-and-collect`、`api-smoke`、`ui-smoke`。
-- 不建议把 `e2e-smoke` 和 `performance-tests` 设为普通 PR Required Checks。
-- artifact 上传使用 `if: always()` 保留失败证据；测试步骤失败时 job 仍然失败，不使用 `continue-on-error` 掩盖结果。
+- `quality-gate.yml` 在 `master` 的 Push / PR 和手动触发中执行 Python 编译、API/UI/E2E 收集、API/UI 连通性检查，并对 API/UI smoke 套件执行 `collect-only`；这些轻量门禁不执行会创建 ERP 业务数据的真实回归。
+- GitHub 托管 Runner 当前没有已验证的测试数据库网络连接或 SSH 隧道，因此 `quality-gate.yml` 暂不提供云端 API/UI/E2E 业务写入入口；本地 pytest 执行能力不受影响。
+- `api-test.yml` 在 `master`、`main` Push 时执行语法检查和 API/UI 用例收集；其手动真实 API 测试在数据库清理链路可达并完成预检前不应触发。
+- `performance-tests.yml` 只能手动触发，只允许 `readonly`，最多 10 用户、最长 5 分钟；正式执行前先进行 1 用户、1 分钟预检，并用并发锁避免性能任务重叠。
 
-### 手动性能流水线策略
+### 结果归档边界
 
-- 只能通过 `workflow_dispatch` 手动触发。
-- 输入包含 `environment`、`scenario`、`users`、`spawn_rate`、`run_time`。
-- `scenario` 只能是 `readonly`。
-- `users` 最大 `10`，`run_time` 最长 `5m`。
-- 正式执行前先跑 `1` 用户、`1m`、`readonly` 预检。
-- 预检失败不得继续升压。
-- 不执行写入类性能场景，不使用 `MYSQL_*` 做数据库闭环。
-- 使用并发锁 `jsh-erp-performance`，同一时间只允许一个性能任务运行。
+- 手动 API workflow 和性能任务仅上传 `artifact-summary/*.json` 受限摘要，包含执行状态及必要的聚合计数。
+- CI 不上传完整 Allure 原始结果、全量 JUnit XML、Playwright Trace / Screenshot、原始 Locust CSV 或日志；本地报告能力与 CI Artifact 归档相互独立。
+- 当前工作流已完成本地代码核对，但仓库内没有足够证据证明最新版本已在 GitHub 托管 Runner 上完整验证通过，因此不作云端成功声明。
 
 采购和销售写入性能场景当前只在本地或受控真实测试环境中显式执行，不纳入 GitHub 托管 Runner 的手动性能流水线。
 
@@ -218,11 +275,11 @@ AutoERP/
 | `ERP_USERNAME` | API/UI/E2E/性能测试账号 |
 | `ERP_PASSWORD` | API/UI/E2E/性能测试密码 |
 | `ERP_HOST` | API workflow 兼容字段；当前 workflow 优先使用 `ERP_API_URL` / `ERP_UI_URL` |
-| `MYSQL_HOST` | E2E 或非 PR 数据库断言需要 |
-| `MYSQL_PORT` | E2E 或非 PR 数据库断言需要 |
-| `MYSQL_USERNAME` | E2E 或非 PR 数据库断言需要 |
-| `MYSQL_PASSWORD` | E2E 或非 PR 数据库断言需要 |
-| `MYSQL_DATABASE` | E2E 或非 PR 数据库断言需要 |
+| `MYSQL_HOST` | 手动 API workflow 的数据库断言与清理；仅在连接链路已验证时使用 |
+| `MYSQL_PORT` | 手动 API workflow 的数据库断言与清理；仅在连接链路已验证时使用 |
+| `MYSQL_USERNAME` | 手动 API workflow 的数据库断言与清理；仅在连接链路已验证时使用 |
+| `MYSQL_PASSWORD` | 手动 API workflow 的数据库断言与清理；仅在连接链路已验证时使用 |
+| `MYSQL_DATABASE` | 手动 API workflow 的数据库断言与清理；仅在连接链路已验证时使用 |
 
 暂不配置且不阻塞当前质量检查的通知类 Secrets：
 

@@ -27,8 +27,12 @@ class ConnectMysql:
             port：{port}
             db：{database}
             """.format(**mysql_conf))
-        except Exception as e:
-            logs.error(f"except:{e}")
+        except Exception:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+            logs.exception('MySQL 连接失败')
+            raise
 
     def close(self):
         if self.cursor:
@@ -48,23 +52,27 @@ class ConnectMysql:
     def query_all(self, sql):
         try:
             self.cursor.execute(sql)
-            self.conn.commit()
             res = self.cursor.fetchall()
             values = []
             for item in res:
                 values.append(list(item.values()))
             return values
-        except Exception as e:
-            logs.error(e)
+        except Exception:
+            logs.exception('MySQL 查询失败')
+            raise
         finally:
             self.close()
 
     def delete(self, sql):
         try:
             self.cursor.execute(sql)
+            affected = self.cursor.rowcount
             self.conn.commit()
-            logs.info('删除成功')
-        except Exception as e:
-            logs.error(e)
+            logs.info('删除成功，影响行数: %s', affected)
+            return affected
+        except Exception:
+            self.conn.rollback()
+            logs.exception('MySQL 删除失败并已回滚')
+            raise
         finally:
             self.close()

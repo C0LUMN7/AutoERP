@@ -11,7 +11,7 @@
 - 调试产物：截图、视频、Trace 由官方插件写入 --output（run.py ui 默认
   reports/playwright）；失败时把非敏感截图与 Trace 附加到 Allure，
   storage_state 永不进入 reports/ 或 Allure 附件
-- session 后置定向清理：只清理本轮 AUTO_UI_ 前缀且包含本次 run_id 的单据数据，
+- session 后置定向清理：只清理本轮从真实接口响应中记录 ID 的单据数据，
   不清理 AUTO_API_* 数据，不删除任何基础数据，不执行任何文件删除操作
 - 真实 jshERP 页面资料/配置缺失时，在启动浏览器前整体跳过并给出具体原因，
   不使用猜测的定位器冒充真实用例
@@ -125,84 +125,81 @@ def fresh_page(browser):
 def ui_run_id() -> str:
     """本轮 UI 运行 ID（YYYYMMDDHHMMSS）。
 
-    UI 本轮创建的单据编号必须包含该 run_id，命名约定：
+    UI 本轮主动填写的订单编号包含该 run_id，命名约定：
     - AUTO_UI_PO_<run_id>：采购订单
-    - AUTO_UI_PI_<run_id>：采购入库
     - AUTO_UI_SO_<run_id>：销售订单
-    - AUTO_UI_SOUT_<run_id>：销售出库
+    - 转单后的采购入库、销售出库由系统自动编号，通过接口响应获取
     - 如需要新建商品：AUTO_UI_GOODS_<run_id>（第一版优先复用固定商品，不清理商品表）
     """
     return time.strftime("%Y%m%d%H%M%S")
 
 
-def _cleanup_ui_run_data(run_id: str) -> None:
-    """session 结束后定向清理本轮 UI 数据（AUTO_UI_ 前缀 + 本轮 run_id 双条件）。
+@pytest.fixture(scope="session")
+def ui_created_document_ids() -> set:
+    """记录本轮 UI 精确查询响应中返回的 jsh_depot_head.id。"""
+    return set()
 
-    只删除本轮 UI 创建的出入库单、收付款单及对应明细：
-    - jsh_depot_head.number / jsh_account_head.bill_no 带 AUTO_UI_ + run_id 双条件
-    - 明细表按本轮单据 ID（head_ids/account_ids 子查询）删除
+
+def _cleanup_ui_run_data(document_ids) -> None:
+    """session 结束后在一个事务中按已记录 ID 定向清理本轮 UI 数据。
+
+    只删除本轮 UI 创建并从接口响应精确记录的订单、出入库单及对应明细；
     不清理 AUTO_API_* 与接口自动化数据，不删除供应商/客户/仓库/结算账户/
-    固定商品等基础数据；数据库配置缺失或连接失败时跳过并说明原因。
+    固定商品等基础数据。清理失败会抛出异常，使 teardown 明确失败。
     """
-    if not run_id:
-        print('[UI 后置清理] 跳过：本次会话未生成运行 ID')
+    ids = sorted({int(document_id) for document_id in document_ids})
+    if not ids:
+        print('[UI 后置清理] 无已登记的本轮业务单据 ID，不执行数据库清理')
         return
     if not all([MYSQL_HOST, MYSQL_PORT, MYSQL_USERNAME, MYSQL_PASSWORD, MYSQL_DATABASE]):
-        print('[UI 后置清理] 跳过：MySQL 配置缺失（MYSQL_* 环境变量或 config/local.ini [MYSQL]）')
-        return
+        raise RuntimeError(
+            '[UI 后置清理] 失败：存在已登记业务单据，但 MySQL 配置缺失'
+        )
 
     # 延迟导入：仅清理执行时加载，collect-only 时不产生任何副作用
     from shared.database import ConnectMysql
-    conn = ConnectMysql()
-    if not conn.conn or not conn.cursor:
-        print('[UI 后置清理] 跳过：MySQL 连接失败')
-        return
 
+    conn = None
     try:
+        conn = ConnectMysql()
         cursor = conn.cursor
-        # 本轮 UI 单据 ID：AUTO_UI_ 前缀 + 本轮 run_id 双条件
-        head_ids = (f"SELECT id FROM jsh_depot_head WHERE number LIKE 'AUTO_UI_%' "
-                    f"AND number LIKE '%{run_id}%' AND delete_flag = '0'")
-        account_ids = (f"SELECT id FROM jsh_account_head WHERE bill_no LIKE 'AUTO_UI_%' "
-                       f"AND bill_no LIKE '%{run_id}%' AND delete_flag = '0'")
-        # 清理顺序：先明细表（收付款明细、出入库明细），再主表（收付款单、出入库单）
+        placeholders = ', '.join(['%s'] * len(ids))
         statements = [
-            ('收付款明细-按业务单据', f"DELETE FROM jsh_account_item WHERE bill_id IN ({head_ids})"),
-            ('收付款明细-按收付款单', f"DELETE FROM jsh_account_item WHERE header_id IN ({account_ids})"),
-            ('出入库明细', f"DELETE FROM jsh_depot_item WHERE header_id IN ({head_ids})"),
-            ('收付款单', f"DELETE FROM jsh_account_head WHERE bill_no LIKE 'AUTO_UI_%' "
-                     f"AND bill_no LIKE '%{run_id}%' AND delete_flag = '0'"),
-            ('出入库单', f"DELETE FROM jsh_depot_head WHERE number LIKE 'AUTO_UI_%' "
-                    f"AND number LIKE '%{run_id}%' AND delete_flag = '0'"),
+            ('收付款明细-按业务单据',
+             f"DELETE FROM jsh_account_item WHERE bill_id IN ({placeholders})"),
+            ('出入库明细',
+             f"DELETE FROM jsh_depot_item WHERE header_id IN ({placeholders})"),
+            ('出入库单',
+             f"DELETE FROM jsh_depot_head WHERE id IN ({placeholders})"),
         ]
-        failed = 0
         for label, sql in statements:
+            cursor.execute(sql, tuple(ids))
+            print(f'[UI 后置清理] {label} 影响行数: {cursor.rowcount}')
+        conn.conn.commit()
+        print(f'[UI 后置清理] 完成：事务已提交，业务单据 ID={ids}')
+    except Exception as exc:
+        if conn and conn.conn:
             try:
-                cursor.execute(sql)
-                affected = cursor.rowcount
-                conn.conn.commit()
-                print(f'[UI 后置清理] {label} 影响行数: {affected}')
-            except Exception as e:
                 conn.conn.rollback()
-                failed += 1
-                print(f'[UI 后置清理] {label} 清理失败: {e}')
-        if failed:
-            print(f'[UI 后置清理] teardown 清理存在失败项（{failed} 项，原因见上方输出），本轮 run_id: {run_id}')
-        else:
-            print(f'[UI 后置清理] 完成：仅清理 AUTO_UI_ 前缀且包含本轮 run_id={run_id} 的单据数据')
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    f'[UI 后置清理] 失败且回滚失败: {rollback_exc}'
+                ) from exc
+            raise RuntimeError('[UI 后置清理] 失败，事务已回滚') from exc
+        raise RuntimeError('[UI 后置清理] 失败：数据库连接未建立') from exc
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 @pytest.fixture(scope="session", autouse=True)
-def ui_run_data_cleanup(ui_run_id):
-    """session 后置定向清理：UI 测试结束后只清理本轮 AUTO_UI_<ui_run_id> 数据。
+def ui_run_data_cleanup(ui_created_document_ids):
+    """session 后置定向清理：只清理本轮已登记 ID 对应的数据。
 
-    与接口自动化约定一致：清理 SQL 全部带 AUTO_UI_ 前缀 + 本轮 run_id 双条件；
     不清理 AUTO_API_* 数据，不删除供应商/客户/仓库/结算账户/固定商品等基础数据。
     """
     yield
-    _cleanup_ui_run_data(ui_run_id)
+    _cleanup_ui_run_data(ui_created_document_ids)
 
 
 @pytest.fixture(autouse=True)
