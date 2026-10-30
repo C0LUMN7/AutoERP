@@ -17,11 +17,9 @@ from api.framework.yaml_loader import load_case_pairs
 class TestSchemaContract:
 
     @allure.story('登录接口 Schema')
-    def test_login_schema(self):
+    def test_login_schema(self, system_login):
         allure.dynamic.title('登录接口响应符合 JSON Schema')
-        base_info, testcase = load_case_pairs('./api/login.yaml')[0]
-        response = run_case(base_info, testcase, yaml_file='./api/login.yaml')
-        validate_schema(response, './api/schemas/auth/login_response.json')
+        validate_schema(system_login, './api/schemas/auth/login_response.json')
 
     @allure.story('商品列表接口 Schema')
     def test_goods_list_schema(self):
