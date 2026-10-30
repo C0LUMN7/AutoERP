@@ -117,13 +117,13 @@ def system_login(api_run_context):
                 DebugTalk._captcha_data = None
                 time.sleep(1)
             base_info, testcase = load_case_pairs('./api/login.yaml')[0]
-            run_case(base_info, testcase, yaml_file='./api/login.yaml')
-            return
+            response = run_case(base_info, testcase, yaml_file='./api/login.yaml')
+            return response
         except Exception as e:
             logs.error(f'登录接口异常 (第{attempt+1}次/共{max_retries}次): {e}')
             if attempt == max_retries - 1:
-                logs.error(f'登录重试{max_retries}次均失败，退出测试')
-                exit()
+                logs.error(f'登录重试{max_retries}次均失败，终止测试')
+                raise
 
 
 @pytest.fixture(scope='session', autouse=True)

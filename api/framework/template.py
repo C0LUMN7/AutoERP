@@ -15,7 +15,12 @@ _EXPR_PATTERN = re.compile(r'\$\{([^}]*)\}')
 # 失败定位信息脱敏：命中以下字段名的提取变量值不展示真实内容
 _SENSITIVE_KEYS = ('token', 'password', 'loginname', 'x-access-token')
 # 直接返回凭据的模板函数，解析值一律不进入失败定位信息
-_SENSITIVE_FUNCS = ('get_login_name', 'get_login_password')
+_SENSITIVE_FUNCS = (
+    'get_login_name',
+    'get_login_password',
+    'get_captcha_code',
+    'get_captcha_uuid',
+)
 
 
 class TemplateResolver:
