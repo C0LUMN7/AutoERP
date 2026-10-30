@@ -59,7 +59,7 @@ AutoERP 是基于 Python + pytest、面向 jshERP 进销存业务的自动化测
 | MySQL / PyMySQL | 数据库断言和测试数据复核 |
 | Allure | API、UI、E2E 可视化报告 |
 | Locust | 性能测试与 HTML/CSV 输出 |
-| GitHub Actions | 代码检查、用例收集与只读连通性检查 |
+| GitHub Actions | 代码检查、用例收集、核心接口自动冒烟回归、失败状态反馈及测试摘要归档 |
 
 ## 📁 项目结构
 
@@ -177,20 +177,33 @@ AutoERP 将 AI 用于测试设计和失败分析中的重复整理工作，在�
 
 通过 `run.py` 统一入口运行测试后，会生成 Allure 原始结果和 HTML 报告；非 CI 环境下会尝试自动打开，HTML 报告保存在 `reports/allure-report/`。
 
+GitHub Actions 自动 API 冒烟回归会生成 JUnit XML，并归档由其提取的脱敏 JSON 测试摘要；本地 Allure、Screenshot、Video 和 Trace 仍按各自原有机制保存，不作为该自动冒烟的 Artifact 上传。
+
 2026-10-29 的全量 Allure 原始文件仅保留在本地历史目录，未上传 GitHub；公开仓库只展示上方脱敏截图。`.runtime/auth/` 是本地登录态，也不属于报告产物。
 
 ## 🔄 CI 持续集成
 
 | 文件 | 用途 |
 | --- | --- |
-| `.github/workflows/quality-gate.yml` | Push / PR / 手动触发的轻量检查与用例收集 |
+| `.github/workflows/quality-gate.yml` | `master` Push、指向 `master` 的 PR 或手动触发的质量检查与只读 API 白名单冒烟 |
 | `.github/workflows/api-test.yml` | Push 代码检查和收集；手动选择 API 套件执行 |
 | `.github/workflows/performance-tests.yml` | 手动只读性能预检与受控基线执行 |
 
-- Push / PR 的 `quality-gate.yml` 执行编译、API/UI/E2E collect-only 及 API/UI 只读连通性检查，不执行云端业务写入。
-- `api-test.yml` 的手动真实 API 回归尚无已验证的数据库清理连接保障，当前不应直接触发。
-- `performance-tests.yml` 仅允许手动 `readonly` 场景，最多 10 用户、最长 5 分钟，并先执行 1 用户、1 分钟预检。
-- CI 通过 GitHub Secrets 注入配置，只归档受限 JSON 摘要，不上传完整 Allure、JUnit、Trace、截图、Locust CSV 或日志。当前不声明这些工作流已在 GitHub Runner 上完成真实回归验证。
+- **自动触发与基础检查**：`quality-gate.yml` 在 master 分支 Push、指向 master 的 PR 及 `workflow_dispatch` 手动触发时运行，执行 Python 编译检查、API/UI/E2E 用例收集，以及真实测试前必要的凭据与 API/UI 连通性检查。
+- **真实 API 冒烟回归**：自动执行登录鉴权和商品查询两个只读安全白名单测试节点；登录鉴权使用必要的 POST 请求，商品查询使用 GET，并校验 HTTP 状态、业务字段及 JSON Schema。凭据不足、零执行或全部跳过时不会伪报成功；Fork PR 不执行需要 Secrets 的真实请求。
+- **失败状态反馈**：pytest 断言失败会返回非零退出码并将对应 Job 标记为 Failed，已完成 Success → Failed → Success 验证。项目不宣称已配置 Required Status Checks 强制阻止 PR 合并。
+- **受限结果归档**：自动从 JUnit XML 提取 `suite`、`execution_status`、`junit_summary_available`、`total`、`passed`、`failed`、`errors`、`skipped` 和 `run_id`，成功与失败运行均上传脱敏 JSON Artifact，保留 30 天；不上传完整 JUnit、Allure、Trace、Screenshot、运行日志或业务响应内容。
+- **执行边界**：当前自动 CI 仅执行精选安全白名单，不等同于全部 API/UI/E2E 用例自动运行，也不包含采购、销售写入型业务自动回归。
+- `api-test.yml` 保留手动 API 套件执行入口；其真实 API 回归尚无已验证的数据库清理连接保障，不描述为安全的自动全量回归。
+- `performance-tests.yml` 仅支持手动 `readonly` 场景，最多 10 用户、最长 5 分钟，并先执行 1 用户、1 分钟预检，不在 Push 或 PR 中自动运行。
+
+真实 GitHub Actions 验收均执行 2 条云端只读冒烟用例：
+
+| 验收状态 | 运行记录 | 结果 |
+| --- | --- | --- |
+| 正常 Success | [Run 41056215233](https://github.com/C0LUMN7/AutoERP/actions/runs/41056215233) | 2 passed，生成受限 JSON Artifact |
+| 受控 Failed | [Run 41058563575](https://github.com/C0LUMN7/AutoERP/actions/runs/41058563575) | 1 passed、1 failed，Job 正确标红且仍生成受限 JSON Artifact |
+| 恢复 Success | [Run 41059182027](https://github.com/C0LUMN7/AutoERP/actions/runs/41059182027) | 恢复正常断言后重新 2 passed |
 
 ## 🚀 快速开始
 
