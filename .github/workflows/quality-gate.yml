@@ -131,6 +131,7 @@ jobs:
           PY
 
       - name: Run read-only API smoke whitelist
+        id: api_smoke_tests
         if: env.RUN_REAL_API_SMOKE == 'true'
         timeout-minutes: 10
         env:
@@ -169,6 +170,99 @@ jobs:
               )
           print(f"Read-only API smoke tests executed: total={total}, skipped={skipped}")
           PY
+
+      - name: Build read-only API smoke summary
+        if: always()
+        env:
+          TEST_SUITE: api-readonly-smoke
+          EXECUTION_STATUS: ${{ job.status }}
+          TEST_STEP_OUTCOME: ${{ steps.api_smoke_tests.outcome }}
+          JUNIT_XML: reports/api_readonly_smoke.xml
+          SUMMARY_FILE: artifact-summary/api-readonly-smoke.json
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path(os.environ["JUNIT_XML"])
+          execution_status = os.environ["EXECUTION_STATUS"]
+          if os.environ["RUN_REAL_API_SMOKE"] != "true":
+              execution_status = "not_run"
+          elif os.environ["TEST_STEP_OUTCOME"] != "success" and execution_status == "success":
+              execution_status = "failure"
+
+          summary = {
+              "suite": os.environ["TEST_SUITE"],
+              "execution_status": execution_status,
+              "junit_summary_available": False,
+              "total": None,
+              "passed": None,
+              "failed": None,
+              "errors": None,
+              "skipped": None,
+              "run_id": os.environ["RUN_ID"],
+          }
+
+          if report.is_file():
+              try:
+                  root = ET.parse(report).getroot()
+                  root_tag = root.tag.rsplit("}", 1)[-1]
+                  if root_tag == "testsuite":
+                      suites = [root]
+                  elif root_tag == "testsuites":
+                      suites = [
+                          child for child in root
+                          if child.tag.rsplit("}", 1)[-1] == "testsuite"
+                      ]
+                  else:
+                      raise ValueError("unsupported JUnit root element")
+
+                  total = sum(int(suite.get("tests", 0)) for suite in suites)
+                  failed = sum(int(suite.get("failures", 0)) for suite in suites)
+                  errors = sum(int(suite.get("errors", 0)) for suite in suites)
+                  skipped = sum(int(suite.get("skipped", 0)) for suite in suites)
+                  passed = total - failed - errors - skipped
+                  if passed < 0:
+                      raise ValueError("inconsistent JUnit counters")
+                  summary.update(
+                      junit_summary_available=True,
+                      total=total,
+                      passed=passed,
+                      failed=failed,
+                      errors=errors,
+                      skipped=skipped,
+                  )
+              except (ET.ParseError, OSError, TypeError, ValueError):
+                  print("::warning::JUnit summary is unavailable because the XML could not be parsed safely.")
+
+          invalid_success = False
+          if os.environ["RUN_REAL_API_SMOKE"] == "true" and summary["execution_status"] == "success":
+              executed = None
+              if summary["junit_summary_available"]:
+                  executed = summary["total"] - summary["skipped"]
+              if executed is None or executed == 0:
+                  summary["execution_status"] = "failure"
+                  invalid_success = True
+
+          output = Path(os.environ["SUMMARY_FILE"])
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+          if invalid_success:
+              raise SystemExit("JUnit summary is missing or contains no executed tests")
+          PY
+
+      - name: Upload read-only API smoke summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: erp-api-readonly-smoke-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact-summary/api-readonly-smoke.json
+          retention-days: 30
+          if-no-files-found: error
 
   ui-smoke:
     name: UI smoke tests
