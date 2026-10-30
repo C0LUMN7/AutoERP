@@ -19,6 +19,14 @@ import jsonpath
 
 from shared.database import ConnectMysql
 from shared.logger import logs
+from api.framework.http_client import _safe_ci_logs
+
+
+def _actual_output(value):
+    """CI 安全模式不展示断言实际值，避免失败 traceback 泄露业务响应。"""
+    if _safe_ci_logs():
+        return f'<{type(value).__name__}，实际值已隐藏>'
+    return repr(value)
 
 
 class Assertions:
@@ -79,7 +87,7 @@ class Assertions:
             if isinstance(expected, str) and expected.upper() == 'NONE':
                 expected = None
             if expected not in resp_list:
-                failures.append(f'字段 {key} 期望包含 {expected!r}，实际 {resp_list!r}')
+                failures.append(f'字段 {key} 期望包含 {expected!r}，实际 {_actual_output(resp_list)}')
         if failures:
             raise AssertionError('；'.join(failures))
 
@@ -93,9 +101,9 @@ class Assertions:
             actual_value = response[key]
             equal = actual_value == expected_value
             if mode == 'eq' and not equal:
-                failures.append(f'字段 {key} 期望 {expected_value!r}，实际 {actual_value!r}')
+                failures.append(f'字段 {key} 期望 {expected_value!r}，实际 {_actual_output(actual_value)}')
             if mode == 'ne' and equal:
-                failures.append(f'字段 {key} 不应等于 {expected_value!r}，实际 {actual_value!r}')
+                failures.append(f'字段 {key} 不应等于 {expected_value!r}，实际 {_actual_output(actual_value)}')
         if failures:
             raise AssertionError('；'.join(failures))
 
@@ -104,7 +112,7 @@ class Assertions:
         if key not in response:
             raise AssertionError(f'响应中未找到字段 {key}')
         if response[key] != list(expected.values())[0]:
-            raise AssertionError(f'字段 {key} 期望 {expected[key]!r}，实际 {response[key]!r}')
+            raise AssertionError(f'字段 {key} 期望 {expected[key]!r}，实际 {_actual_output(response[key])}')
 
     # ---------- 数据库断言 ----------
 
@@ -169,6 +177,12 @@ def validate_schema(response, schema_file):
         jsonschema.validate(response, schema)
     except jsonschema.ValidationError as e:
         path = '.'.join(str(p) for p in e.absolute_path) or '(根节点)'
+        if _safe_ci_logs():
+            detail = e.message if e.validator == 'required' else f'实际类型 {type(e.instance).__name__}'
+            raise AssertionError(
+                f'Schema 契约校验失败: {os.path.basename(schema_file)}，'
+                f'字段 {path} 不符合约束 {e.validator}: {detail}，实际值已隐藏'
+            ) from None
         raise AssertionError(
             f'Schema 契约校验失败: {os.path.basename(schema_file)}，'
             f'字段 {path} 不符合约束 {e.validator}: {e.message}，实际 {e.instance!r}'

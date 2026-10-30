@@ -133,6 +133,8 @@ jobs:
       - name: Run read-only API smoke whitelist
         if: env.RUN_REAL_API_SMOKE == 'true'
         timeout-minutes: 10
+        env:
+          ERP_SAFE_CI_LOGS: 'true'
         run: |
           python -m pytest -s -v \
             api/cases/test_schema_contract.py::TestSchemaContract::test_login_schema \
