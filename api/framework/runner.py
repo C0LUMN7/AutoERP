@@ -21,7 +21,14 @@ import requests
 
 from shared.debugtalk import DebugTalk
 from shared.logger import logs
-from api.framework.http_client import SendRequest, _mask_response_text, _mask_sensitive, _SENSITIVE_KEYS
+from api.framework.http_client import (
+    SendRequest,
+    _mask_response_text,
+    _mask_sensitive,
+    _response_output,
+    _safe_ci_logs,
+    _SENSITIVE_KEYS,
+)
 from config.settings import ERP_PASSWORD, ERP_USERNAME, get_api_url
 from api.framework.assertions import Assertions
 from api.framework.template import TemplateResolver
@@ -116,7 +123,7 @@ class ApiRunner:
         status_code = res.status_code
         res_text = res.text
         # 附件仅展示脱敏副本（登录响应含 token），提取与断言仍使用原始文本
-        allure.attach(_mask_response_text(res_text), '接口响应信息', allure.attachment_type.TEXT)
+        allure.attach(_response_output(res), '接口响应信息', allure.attachment_type.TEXT)
         res_json = self._parse_response(res_text, api_name, url, case_name, method, header, cookies, files,
                                         request_params)
 
@@ -158,8 +165,10 @@ class ApiRunner:
                 header['X-Access-Token'] = self._relogin()
                 res = self.send.run_main(name=api_name, url=url, case_name=case_name, header=header,
                                          method=method, cookies=cookies, file=files, **request_params)
-                allure.attach(_mask_response_text(res.text), '接口响应信息', allure.attachment_type.TEXT)
+                allure.attach(_response_output(res), '接口响应信息', allure.attachment_type.TEXT)
                 return json.loads(res.text)
+            if _safe_ci_logs():
+                raise RuntimeError('接口响应不是合法 JSON，响应内容已隐藏') from None
             raise RuntimeError(f'接口响应不是合法 JSON，响应内容: {res_text[:200]}')
 
     def _extract(self, extract, extract_list, res_text, case_name):
@@ -238,7 +247,10 @@ class ApiRunner:
                         self.context.set('token', new_token)
                         logs.info('重新登录成功（第%s次）', attempt + 1)
                         return new_token
-                    logs.warning('登录返回无 token（第%s次）: %s', attempt + 1, _mask_sensitive(data))
+                    if _safe_ci_logs():
+                        logs.warning('登录返回无 token（第%s次），响应内容已隐藏', attempt + 1)
+                    else:
+                        logs.warning('登录返回无 token（第%s次）: %s', attempt + 1, _mask_sensitive(data))
                 else:
                     logs.warning('登录状态码异常（第%s次）: %s', attempt + 1, r.status_code)
             except Exception as e:

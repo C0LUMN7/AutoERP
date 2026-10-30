@@ -19,6 +19,7 @@
       "properties": {
         "token": {
           "type": "string",
+          "minLength": 1,
           "description": "登录令牌，后续接口通过 X-Access-Token 请求头携带"
         }
       }

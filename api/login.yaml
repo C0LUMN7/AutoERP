@@ -12,6 +12,6 @@
         code: ${get_captcha_code()}
         uuid: ${get_captcha_uuid()}
       validation:
-        - contains: { 'code': 200, 'msgTip': 'user can login' }
+        - contains: { 'status_code': 200, 'code': 200, 'msgTip': 'user can login' }
       extract:
         token: $.data.token

@@ -1,4 +1,5 @@
 import json
+import os
 import allure
 import pytest
 import requests
@@ -12,6 +13,11 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 # 日志/Allure 附件脱敏：命中以下字段名的值一律不展示真实内容
 _SENSITIVE_KEYS = ('loginname', 'password', 'token', 'x-access-token')
+
+
+def _safe_ci_logs():
+    """只读冒烟 CI 开关：隐藏响应和请求值，本地默认日志与 Allure 行为不变。"""
+    return os.getenv('ERP_SAFE_CI_LOGS', '').lower() == 'true'
 
 
 def _mask_sensitive(data, mask='***'):
@@ -38,6 +44,20 @@ def _mask_response_text(text):
     except (ValueError, TypeError):
         return text
     return json.dumps(_mask_sensitive(data), ensure_ascii=False)
+
+
+def _response_output(response):
+    """返回适合日志/Allure 的响应文本；CI 安全模式只保留 HTTP 状态码。"""
+    if _safe_ci_logs():
+        return f'HTTP status={response.status_code}，响应内容已隐藏'
+    return _mask_response_text(response.text) if response.text else str(response)
+
+
+def _request_output(kwargs):
+    """CI 安全模式不展示请求值或字段名。"""
+    if not _safe_ci_logs():
+        return json.dumps(_mask_sensitive(kwargs), ensure_ascii=False)
+    return '请求参数已隐藏'
 
 
 class SendRequest:
@@ -169,8 +189,9 @@ class SendRequest:
             if set_cookie:
                 cookie['Cookie'] = set_cookie
                 self._write_context(cookie)
-                logs.info("cookie：%s" % {k: '***' for k in cookie})
-            logs.info("接口返回信息：%s" % _mask_response_text(result.text) if result.text else result)
+                if not _safe_ci_logs():
+                    logs.info("cookie：%s" % {k: '***' for k in cookie})
+            logs.info("接口返回信息：%s", _response_output(result))
 
             # 自动重新登录：检测到loginOut时循环重试（最多3次）
             max_relogin_retries = 3
@@ -182,7 +203,7 @@ class SendRequest:
                         if 'headers' in kwargs:
                             kwargs['headers']['X-Access-Token'] = new_token
                         result = session.request(**kwargs)
-                        logs.info("接口返回信息(重试)：%s" % _mask_response_text(result.text) if result.text else result)
+                        logs.info("接口返回信息(重试)：%s", _response_output(result))
                     else:
                         break
                 else:
@@ -218,18 +239,20 @@ class SendRequest:
             logs.info('请求地址：%s' % url)
             logs.info('请求方式：%s' % method)
             logs.info('测试用例名称：%s' % case_name)
-            logs.info('请求头：%s' % _mask_sensitive(header))
-            logs.info('Cookie：%s' % ({k: '***' for k in cookies} if cookies else cookies))
-            req_params = json.dumps(_mask_sensitive(kwargs), ensure_ascii=False)
+            if not _safe_ci_logs():
+                logs.info('请求头：%s' % _mask_sensitive(header))
+                logs.info('Cookie：%s' % ({k: '***' for k in cookies} if cookies else cookies))
+            req_params = _request_output(kwargs)
+            log_params = req_params if _safe_ci_logs() else _mask_sensitive(kwargs)
             if "data" in kwargs.keys():
                 allure.attach(req_params, '请求参数', allure.attachment_type.TEXT)
-                logs.info("请求参数：%s" % _mask_sensitive(kwargs))
+                logs.info("请求参数：%s", log_params)
             elif "json" in kwargs.keys():
                 allure.attach(req_params, '请求参数', allure.attachment_type.TEXT)
-                logs.info("请求参数：%s" % _mask_sensitive(kwargs))
+                logs.info("请求参数：%s", log_params)
             elif "params" in kwargs.keys():
                 allure.attach(req_params, '请求参数', allure.attachment_type.TEXT)
-                logs.info("请求参数：%s" % _mask_sensitive(kwargs))
+                logs.info("请求参数：%s", log_params)
         except Exception as e:
             logs.error(e)
         # time.sleep(0.5)
