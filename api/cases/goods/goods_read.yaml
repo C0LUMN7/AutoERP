@@ -8,4 +8,4 @@
   testCase:
     - case_name: 正常查询商品列表（只读冒烟，不提取历史数据行ID用于后续写操作）
       validation:
-        - contains: { 'code': 200 }
+        - contains: { 'status_code': 200, 'code': 200 }

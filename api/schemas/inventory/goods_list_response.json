@@ -15,10 +15,11 @@
     },
     "data": {
       "type": "object",
-      "required": ["rows"],
+      "required": ["total", "rows"],
       "properties": {
         "total": {
           "type": "integer",
+          "minimum": 0,
           "description": "商品总数"
         },
         "rows": {

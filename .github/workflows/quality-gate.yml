@@ -47,20 +47,27 @@ jobs:
           python run.py e2e --collect-only
 
   api-smoke:
-    name: API smoke tests
+    name: Read-only API smoke tests
     runs-on: ubuntu-latest
     needs: lint-and-collect
     timeout-minutes: 30
     env:
+      RUN_REAL_API_SMOKE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       ERP_API_URL: ${{ secrets.ERP_API_URL }}
-      ERP_UI_URL: ${{ secrets.ERP_UI_URL }}
       ERP_USERNAME: ${{ secrets.ERP_USERNAME }}
       ERP_PASSWORD: ${{ secrets.ERP_PASSWORD }}
     steps:
+      - name: Explain fork pull request skip
+        if: env.RUN_REAL_API_SMOKE != 'true'
+        run: |
+          echo "::notice::Skipping real API smoke tests for a fork pull request because repository Secrets are unavailable to untrusted code."
+
       - name: Checkout code
+        if: env.RUN_REAL_API_SMOKE == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: env.RUN_REAL_API_SMOKE == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -68,12 +75,14 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Set up Java for Allure
+        if: env.RUN_REAL_API_SMOKE == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Install Allure CLI
+        if: env.RUN_REAL_API_SMOKE == 'true'
         run: |
           ALLURE_VERSION=2.33.0
           curl -fL --retry 3 -o allure.tgz "https://github.com/allure-framework/allure2/releases/download/${ALLURE_VERSION}/allure-${ALLURE_VERSION}.tgz"
@@ -83,11 +92,28 @@ jobs:
           .tools/allure/bin/allure --version
 
       - name: Install dependencies
+        if: env.RUN_REAL_API_SMOKE == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check required API credentials
+        if: env.RUN_REAL_API_SMOKE == 'true'
+        shell: bash
+        run: |
+          missing=()
+          for name in ERP_API_URL ERP_USERNAME ERP_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "Missing required repository Secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Check ERP API connectivity
+        if: env.RUN_REAL_API_SMOKE == 'true'
         run: |
           python - <<'PY'
           import os
@@ -104,8 +130,43 @@ jobs:
           print(f"ERP_API_URL reachable, status={response.status_code}")
           PY
 
-      - name: Collect API smoke tests for lightweight gates
-        run: python run.py api --suite smoke --collect-only
+      - name: Run read-only API smoke whitelist
+        if: env.RUN_REAL_API_SMOKE == 'true'
+        timeout-minutes: 10
+        run: |
+          python -m pytest -s -v \
+            api/cases/test_schema_contract.py::TestSchemaContract::test_login_schema \
+            api/cases/test_schema_contract.py::TestSchemaContract::test_goods_list_schema \
+            --alluredir=reports/allure-results/api-readonly-smoke \
+            --junitxml=reports/api_readonly_smoke.xml
+
+      - name: Verify read-only API smoke result count
+        if: env.RUN_REAL_API_SMOKE == 'true'
+        env:
+          JUNIT_XML: reports/api_readonly_smoke.xml
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          report = Path(os.environ["JUNIT_XML"])
+          if not report.is_file():
+              raise SystemExit(f"JUnit XML was not generated: {report}")
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag.rsplit("}", 1)[-1] == "testsuite" else [
+              child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"
+          ]
+          total = sum(int(suite.get("tests", 0)) for suite in suites)
+          skipped = sum(int(suite.get("skipped", 0)) for suite in suites)
+          executed = total - skipped
+          if executed < 2:
+              raise SystemExit(
+                  f"Expected at least 2 executed read-only API smoke tests, "
+                  f"got total={total}, skipped={skipped}"
+              )
+          print(f"Read-only API smoke tests executed: total={total}, skipped={skipped}")
+          PY
 
   ui-smoke:
     name: UI smoke tests
